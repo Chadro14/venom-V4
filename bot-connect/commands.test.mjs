@@ -56,14 +56,14 @@ test('les sous-menus présentent des commandes exécutables', async () => {
   const send = (text, key) => dispatch({ type: 'notify', messages: [message(text, key)] });
   await send('.menu');
   const menus = [...replies.at(-1).matchAll(/│ \.(\w+menu)\b/g)].map(match => match[1]);
-  assert.equal(menus.length, 10);
+  assert.equal(menus.length, 12);
   for (const menu of menus) {
     await send('.' + menu);
     assert.match(replies.at(-1), /│ \./);
   }
   await send('.allmenu');
   const list = [...replies.at(-1).matchAll(/│ \.(\w+)\b/g)].map(match => match[1]);
-  assert.equal(new Set(list).size, 29);
+  assert.equal(new Set(list).size, 56);
   await send('.fliptext Venom');
   assert.equal(replies.at(-1), 'moneV');
   await send('.dbinary 01000001');

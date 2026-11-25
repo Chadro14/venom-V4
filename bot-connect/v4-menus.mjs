@@ -23,6 +23,43 @@ const levels = { noob: 10, easy: 20, medium: 50, hard: 100 };
 const suits = ['pierre', 'papier', 'ciseaux'];
 const truths = ['Quel projet te rend le plus fier ?', 'Quelle compétence aimerais-tu apprendre ?', 'Quelle série pourrais-tu revoir sans te lasser ?'];
 const dares = ['Dessine un personnage les yeux fermés.', 'Invente un titre pour ton autobiographie.', 'Résume ton film préféré en trois mots.'];
+const facts = [
+  'La lumière du Soleil met environ huit minutes à atteindre la Terre.',
+  'Une pieuvre possède trois cœurs.',
+  'Vénus tourne sur elle-même plus lentement qu’elle ne fait le tour du Soleil.',
+];
+const questionReplies = {
+  can: answers,
+  is: answers,
+  when: ['Demain.', 'Dans quelques jours.', 'Au bon moment.'],
+  where: ['Plus près que tu ne le penses.', 'À la prochaine étape de ton voyage.', 'Là où tu regarderas en premier.'],
+  what: ['Une surprise.', 'Une bonne question.', 'Quelque chose d’inattendu.'],
+  how: ['Un pas à la fois.', 'En commençant par le plus simple.', 'Avec un peu de patience.'],
+};
+
+async function animalPhoto(kind) {
+  const providers = {
+    cat: { api: 'https://api.thecatapi.com/v1/images/search', host: 'cdn2.thecatapi.com' },
+    dog: { api: 'https://dog.ceo/api/breeds/image/random', host: 'images.dog.ceo' },
+  };
+  const { api, host } = providers[kind];
+  const payload = await json(api);
+  const source = Array.isArray(payload) ? payload[0]?.url : payload.message;
+  const url = new URL(source);
+  if (url.origin !== `https://${host}` || url.username || url.password) throw new Error('Image source not allowed');
+  const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(8000) });
+  if (!response.ok || !response.headers.get('content-type')?.startsWith('image/') || !response.body) {
+    throw new Error('Image unavailable');
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const part of response.body) {
+    size += part.length;
+    if (size > 4 * 1024 * 1024) throw new Error('Image too large');
+    chunks.push(part);
+  }
+  return { image: Buffer.concat(chunks, size) };
+}
 
 function quiz({ args, state }) {
   const input = args.trim().toLowerCase();
@@ -160,6 +197,14 @@ export const additionalCommands = [
   ['dare', { label: 'Tirer un défi', run: () => answer(pick(dares)) }],
   ['8ball', prompt('Poser une question au hasard', '.8ball Vais-je réussir ?', () => answer(pick(answers)))],
   ['rate', prompt('Donner une note au hasard', '.rate mon dessin', text => answer(`${text} · ${randomInt(101)}/100`))],
+  ['fact', { label: 'Afficher un fait au hasard', run: () => answer(pick(facts)) }],
+  ['pick', prompt('Choisir entre plusieurs options', '.pick manga | anime', text => {
+    const values = text.split('|').map(value => value.trim()).filter(Boolean);
+    return answer(values.length > 1 ? pick(values) : 'Sépare au moins deux choix avec |.');
+  })],
+  ...Object.entries(questionReplies).map(([name, replies]) => [
+    name, prompt('Réponse aléatoire pour jouer', `.${name} ta question`, () => answer(pick(replies))),
+  ]),
   ['quotes', { label: 'Citation du jour', async run() {
     const { quote } = await json('https://favqs.com/api/qotd');
     return answer(quote?.body ? `« ${quote.body} »\n— ${quote.author}` : 'Citation indisponible.');
@@ -172,6 +217,14 @@ export const additionalCommands = [
   ['bible', prompt('Chercher un passage biblique', '.bible John 3:16', bible)],
   ['quran', prompt('Lire un verset en français', '.quran 1:1', quran)],
   ['repo', { label: 'Dépôt de Venom V4', run: () => answer('https://github.com/Chadro14/venom-V4') }],
+  ['tagme', { label: 'Se mentionner', run: ({ jid }) => ({ text: `@${jid.split('@')[0]}`, mentions: [jid] }) }],
+  ['q', { label: 'Relire un texte cité', run: ({ body }) => {
+    const quoted = body.extendedTextMessage?.contextInfo?.quotedMessage;
+    const text = quoted?.conversation ?? quoted?.extendedTextMessage?.text;
+    return answer(text?.slice(0, 1800) || 'Réponds à un message texte avec .q.');
+  } }],
+  ['catmeow', { label: 'Photo aléatoire de chat', run: () => animalPhoto('cat') }],
+  ['dogwoof', { label: 'Photo aléatoire de chien', run: () => animalPhoto('dog') }],
   ['idgroup', { label: 'Afficher l’identifiant du groupe', group: true, run: ({ group, jid }) =>
     answer(group ? `Identifiant du groupe : ${jid}` : 'Utilise .idgroup dans le groupe concerné.') }],
 ];

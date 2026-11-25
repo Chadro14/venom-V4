@@ -44,6 +44,7 @@ function mediaFormat(bytes) {
   if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png_pipe';
   if (bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return 'webp_pipe';
   if (bytes.toString('ascii', 0, 4) === 'OggS') return 'ogg';
+  if (/^GIF8[79]a$/.test(bytes.toString('ascii', 0, 6))) return 'gif';
   if (bytes.toString('ascii', 0, 3) === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)) return 'mp3';
   return null;
 }
@@ -110,16 +111,52 @@ async function sticker({ body, baileys }) {
   return { sticker: buffer };
 }
 
-async function audio({ body, baileys }, voice) {
+async function audio({ body, baileys }, voice, filter) {
   const { media, type } = getMedia(body, ['video', 'audio']);
   if (!media) return { text: 'Réponds à une vidéo ou à un audio avec la commande.' };
   if (Number(media.seconds) > 120) return { text: 'Choisis un média de 2 minutes maximum.' };
   const bytes = await downloadMedia(baileys, media, type);
   if (!bytes) return { text: 'Choisis un média de 8 Mo maximum.' };
   const buffer = await convertMedia(bytes, ['mov', 'ogg', 'mp3'], voice ? 'ogg' : 'mp3', [
-    '-t', '120', '-vn', '-ac', '1', '-c:a', voice ? 'libopus' : 'libmp3lame', '-b:a', '48k',
+    '-t', '120', '-vn', '-ac', '1', ...(filter ? ['-af', filter] : []),
+    '-c:a', voice ? 'libopus' : 'libmp3lame', '-b:a', '48k',
   ]);
   return { audio: buffer, mimetype: voice ? 'audio/ogg; codecs=opus' : 'audio/mpeg', ...(voice ? { ptt: true } : {}) };
+}
+
+const audioEffects = {
+  bass: ['Renforcer les basses', 'bass=g=8'],
+  blown: ['Appliquer une distorsion', 'acrusher=.1:1:64:0:log'],
+  deep: ['Abaisser la voix', 'aresample=44100,asetrate=35280,aresample=44100,atempo=1.25'],
+  earrape: ['Augmenter le volume avec limiteur', 'volume=2,alimiter=limit=0.75'],
+  fast: ['Accélérer le son', 'atempo=1.63'],
+  fat: ['Donner un son plus grave', 'aresample=44100,asetrate=30000,aresample=44100'],
+  nightcore: ['Accélérer et monter la hauteur', 'aresample=44100,asetrate=55125,aresample=44100,atempo=1.06'],
+  reverse: ['Inverser un audio', 'atrim=duration=30,areverse'],
+  robot: ['Appliquer un effet robot', 'tremolo=f=24:d=0.85'],
+  slow: ['Ralentir le son', 'atempo=0.7'],
+  squirrel: ['Donner une voix aiguë', 'aresample=44100,asetrate=65100,aresample=44100'],
+};
+
+function gain(args) {
+  const value = Number(args.trim());
+  return /^\d{1,3}$/.test(args.trim()) && value <= 300 ? value / 100 : null;
+}
+
+async function videoOutput({ body, baileys, args }, mode) {
+  const { media, type } = getMedia(body, mode === 'volume' ? ['video'] : ['video', 'sticker']);
+  if (!media) return { text: 'Réponds à une vidéo courte ou à un sticker avec la commande.' };
+  if (Number(media.seconds) > 15) return { text: 'Choisis une vidéo de 15 secondes maximum.' };
+  const volume = gain(args);
+  if (mode === 'volume' && volume === null) return { text: 'Exemple : .volvideo 120 (0 à 300 %).' };
+  const bytes = await downloadMedia(baileys, media, type);
+  if (!bytes) return { text: 'Choisis un média de 8 Mo maximum.' };
+  const video = await convertMedia(bytes, ['mov', 'gif', 'webp_pipe'], 'mp4', [
+    '-t', '15', '-vf', 'scale=480:480:force_original_aspect_ratio=decrease:force_divisible_by=2',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-threads', '1', '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+    ...(mode === 'volume' ? ['-af', `volume=${volume},alimiter=limit=0.85`, '-c:a', 'aac'] : ['-an']),
+  ]);
+  return { video, ...(mode === 'gif' ? { gifPlayback: true } : {}) };
 }
 
 async function image({ body, baileys }) {
@@ -132,15 +169,17 @@ async function image({ body, baileys }) {
 
 const menuSections = [
   ['RECHERCHE', 'searchmenu', ['wiki', 'weather', 'itunes']],
-  ['MÉDIAS', 'downloadmenu', ['play', 'toaudio', 'toptt', 'itunes']],
+  ['MÉDIAS', 'downloadmenu', ['play', 'toaudio', 'toptt', 'itunes', 'togif', 'tomp4', 'volvideo']],
   ['OUTILS', 'toolmenu', ['fliptext', 'styletext', 'ebinary', 'dbinary', 'tts', 'readmore']],
+  ['EFFETS AUDIO', 'audiomenu', [...Object.keys(audioEffects), 'volaudio']],
   ['JEUX', 'gamemenu', ['dice', 'math', 'suit']],
-  ['DIVERTISSEMENT', 'funmenu', ['truth', 'dare', '8ball', 'rate', 'quotes']],
+  ['DIVERTISSEMENT', 'funmenu', ['truth', 'dare', '8ball', 'rate', 'quotes', 'fact', 'pick', 'can', 'is', 'when', 'where', 'what', 'how']],
+  ['PHOTOS ALÉATOIRES', 'randomphotomenu', ['catmeow', 'dogwoof']],
   ['STICKERS', 'stickermenu', ['sticker', 'toimg']],
   ['ANIME', 'animemenu', ['anime']],
   ['GROUPES', 'groupmenu', ['idgroup']],
   ['RELIGION', 'religionmenu', ['bible', 'quran']],
-  ['BOT', 'othermenu', ['ping', 'runtime', 'repo']],
+  ['BOT', 'othermenu', ['ping', 'runtime', 'repo', 'tagme', 'q']],
 ];
 
 function commandList(sections) {
@@ -161,6 +200,18 @@ const commands = new Map([
   ['toimg', { label: 'Sticker fixe vers image', media: true, run: image }],
   ['toaudio', { label: 'Vidéo ou audio vers MP3', media: true, run: ctx => audio(ctx, false) }],
   ['toptt', { label: 'Vidéo ou audio vers message vocal', media: true, run: ctx => audio(ctx, true) }],
+  ...Object.entries(audioEffects).map(([name, [label, filter]]) => [
+    name, { label, media: true, run: ctx => audio(ctx, false, filter) },
+  ]),
+  ['volaudio', { label: 'Régler le volume audio', media: true, run: ctx => {
+    const volume = gain(ctx.args);
+    return volume === null
+      ? { text: 'Exemple : .volaudio 120 (0 à 300 %).' }
+      : audio(ctx, false, `volume=${volume},alimiter=limit=0.85`);
+  } }],
+  ['volvideo', { label: 'Régler le volume vidéo', media: true, run: ctx => videoOutput(ctx, 'volume') }],
+  ['togif', { label: 'Vidéo en boucle', media: true, run: ctx => videoOutput(ctx, 'gif') }],
+  ['tomp4', { label: 'Convertir en MP4', media: true, run: ctx => videoOutput(ctx, 'mp4') }],
   ['dice', { label: 'Lancer un dé', run: () => ({ text: dice[randomInt(dice.length)] }) }],
   ['readmore', { label: 'Masquer la suite · début | suite', run: ({ args }) => {
     const separator = args.indexOf('|');
@@ -179,6 +230,7 @@ const aliases = new Map([
   ['style', 'styletext'], ['say', 'tts'], ['gtts', 'tts'],
   ['mathquiz', 'math'], ['wikipedia', 'wiki'], ['song', 'play'],
   ['toimage', 'toimg'], ['tomp3', 'toaudio'],
+  ['tovn', 'toptt'], ['toaud', 'toaudio'], ['cat', 'catmeow'], ['dog', 'dogwoof'],
 ]);
 
 export function bindCommands(socket, baileys, authorized) {
