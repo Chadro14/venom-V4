@@ -9,7 +9,7 @@ import { additionalCommands } from './v4-menus.mjs';
 
 const runFile = promisify(execFile);
 const require = createRequire(import.meta.url);
-const artwork = new URL('../XliconMedia/theme/XliconPic.jpg', import.meta.url);
+const artwork = new URL('./venom-v4-menu.jpg', import.meta.url);
 const maxMediaBytes = 8 * 1024 * 1024;
 const dice = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
 const readMore = '\u200e'.repeat(4001);
