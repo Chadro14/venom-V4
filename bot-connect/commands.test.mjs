@@ -16,17 +16,21 @@ test('menu et alias autorisés, commande inconnue ignorée', async () => {
   const replies = [];
   const socket = {
     user: { id: '243123456789:2@s.whatsapp.net' },
-    sendMessage: async (_, reply) => replies.push(reply.text),
+    sendMessage: async (_, reply) => replies.push(reply.text ?? reply.caption),
   };
   const dispatch = bindCommands(socket, { jidNormalizedUser: normalize }, () => true);
   await dispatch({ type: 'notify', messages: [
-    message('.menu'), message('.ping'), message('.help'), message('.unknown'), message('.ping extra'),
+    message('.menu'), message('.ping'), message('.help'), message('.unknown'),
+    message('.runtime'), message('.dice'), message('.readmore début | suite'),
+    message('.aide'), message('.spam'), message('.crash'),
   ] });
-  assert.equal(replies.length, 3);
-  assert.match(replies[0], /^\*VENOM V4 · Bot Connect\*/);
-  assert.deepEqual(replies[0].split('\n').slice(1).map(line => line.split(' ')[0]), ['.menu', '.ping', '.aide']);
-  assert.equal(replies[1], 'Pong · Venom V4');
-  assert.match(replies[2], /bot-connect\.ink-drop\.app/);
+  assert.equal(replies.length, 6);
+  assert.match(replies[0], /VENOM V4[\s\S]*\.sticker/);
+  assert.equal(replies[1], '🏓 Pong · Venom V4');
+  assert.equal(replies[2], replies[0]);
+  assert.match(replies[3], /en ligne depuis/);
+  assert.match(replies[4], /[⚀-⚅]/u);
+  assert.match(replies[5], /^début\u200e+suite$/u);
 });
 
 test('seuls les nouveaux messages du client dans son propre chat sont traités', async () => {
