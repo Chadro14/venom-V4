@@ -59,9 +59,20 @@ async function wiki(query) {
 }
 
 async function anime(query) {
-  const { data } = await json('https://api.jikan.moe/v4/anime', { q: query, limit: 1, sfw: true });
-  const item = data?.[0];
-  return answer(item ? `*${item.title}*\n${item.episodes ?? '–'} épisode(s) · Note : ${item.score ?? '–'}\n${(item.synopsis ?? '').slice(0, 1200)}\n${item.url}` : 'Aucun anime trouvé.');
+  const response = await fetch('https://graphql.anilist.co', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({
+      query: 'query($name: String!){Media(search:$name, type:ANIME, isAdult:false){title{romaji} episodes averageScore siteUrl description(asHtml:false)}}',
+      variables: { name: query },
+    }),
+    signal: AbortSignal.timeout(8000),
+  });
+  if (response.status === 404) return answer('Aucun anime trouvé.');
+  if (!response.ok) throw new Error(`Anime provider HTTP ${response.status}`);
+  const item = (await response.json()).data?.Media;
+  const synopsis = (item?.description ?? '').replace(/<[^>]*>/g, ' ').trim().slice(0, 1200);
+  return answer(item ? `*${item.title.romaji}*\n${item.episodes ?? '–'} épisode(s) · Note : ${item.averageScore ?? '–'}/100\n${synopsis}\n${item.siteUrl}` : 'Aucun anime trouvé.');
 }
 
 async function weather(query) {
@@ -89,6 +100,28 @@ async function itunes(query) {
   return answer(results?.length
     ? results.map(item => `*${item.trackName}* · ${item.artistName}\n${item.trackViewUrl}`).join('\n\n')
     : 'Aucun morceau trouvé.');
+}
+
+async function play(query) {
+  const { results } = await json('https://itunes.apple.com/search', { term: query, entity: 'song', limit: 4 });
+  const track = results?.find(item => item.previewUrl);
+  if (!track) return answer('Aucun extrait audio trouvé.');
+  const url = new URL(track.previewUrl);
+  if (url.protocol !== 'https:' || !url.hostname.endsWith('.itunes.apple.com') || url.username || url.password || url.port) {
+    throw new Error('Unexpected preview source');
+  }
+  const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(8000) });
+  if (!response.ok || !response.headers.get('content-type')?.startsWith('audio/') || !response.body) {
+    throw new Error('Preview unavailable');
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of response.body) {
+    size += chunk.length;
+    if (size > 4 * 1024 * 1024) throw new Error('Preview too large');
+    chunks.push(chunk);
+  }
+  return { audio: Buffer.concat(chunks, size), mimetype: 'audio/mp4' };
 }
 
 async function bible(reference) {
@@ -135,6 +168,7 @@ export const additionalCommands = [
   ['weather', prompt('Afficher la météo', '.weather Kinshasa', weather)],
   ['anime', prompt('Trouver la fiche d’un anime', '.anime Naruto', anime)],
   ['itunes', prompt('Chercher un morceau sur Apple Music', '.itunes Naruto', itunes)],
+  ['play', prompt('Écouter un extrait Apple Music', '.play Naruto', play)],
   ['bible', prompt('Chercher un passage biblique', '.bible John 3:16', bible)],
   ['quran', prompt('Lire un verset en français', '.quran 1:1', quran)],
   ['repo', { label: 'Dépôt de Venom V4', run: () => answer('https://github.com/Chadro14/venom-V4') }],

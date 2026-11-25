@@ -132,7 +132,7 @@ async function image({ body, baileys }) {
 
 const menuSections = [
   ['RECHERCHE', 'searchmenu', ['wiki', 'weather', 'itunes']],
-  ['MÉDIAS', 'downloadmenu', ['toaudio', 'toptt', 'itunes']],
+  ['MÉDIAS', 'downloadmenu', ['play', 'toaudio', 'toptt', 'itunes']],
   ['OUTILS', 'toolmenu', ['fliptext', 'styletext', 'ebinary', 'dbinary', 'tts', 'readmore']],
   ['JEUX', 'gamemenu', ['dice', 'math', 'suit']],
   ['DIVERTISSEMENT', 'funmenu', ['truth', 'dare', '8ball', 'rate', 'quotes']],
@@ -177,7 +177,7 @@ const aliases = new Map([
   ['p', 'ping'], ['botstatus', 'ping'], ['statusbot', 'ping'],
   ['s', 'sticker'], ['stiker', 'sticker'],
   ['style', 'styletext'], ['say', 'tts'], ['gtts', 'tts'],
-  ['mathquiz', 'math'], ['wikipedia', 'wiki'],
+  ['mathquiz', 'math'], ['wikipedia', 'wiki'], ['song', 'play'],
   ['toimage', 'toimg'], ['tomp3', 'toaudio'],
 ]);
 
