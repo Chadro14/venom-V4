@@ -25,7 +25,7 @@ test('menu et alias autorisés, commande inconnue ignorée', async () => {
     message('.aide'), message('.spam'), message('.crash'),
   ] });
   assert.equal(replies.length, 6);
-  assert.match(replies[0], /VENOM V4[\s\S]*\.sticker/);
+  assert.match(replies[0], /VENOM V4[\s\S]*\.stickermenu/);
   assert.equal(replies[1], '🏓 Pong · Venom V4');
   assert.equal(replies[2], replies[0]);
   assert.match(replies[3], /en ligne depuis/);
@@ -47,4 +47,32 @@ test('seuls les nouveaux messages du client dans son propre chat sont traités',
   authorized = false;
   await dispatch({ type: 'notify', messages: [message('.ping')] });
   assert.equal(sends, 0);
+});
+
+test('les sous-menus présentent des commandes exécutables', async () => {
+  const replies = [];
+  const socket = { user: { id: self }, sendMessage: async (_, reply) => replies.push(reply.text ?? reply.caption) };
+  const dispatch = bindCommands(socket, { jidNormalizedUser: normalize }, () => true);
+  const send = (text, key) => dispatch({ type: 'notify', messages: [message(text, key)] });
+  await send('.menu');
+  const menus = [...replies.at(-1).matchAll(/│ \.(\w+menu)\b/g)].map(match => match[1]);
+  assert.equal(menus.length, 10);
+  for (const menu of menus) {
+    await send('.' + menu);
+    assert.match(replies.at(-1), /│ \./);
+  }
+  await send('.allmenu');
+  const list = [...replies.at(-1).matchAll(/│ \.(\w+)\b/g)].map(match => match[1]);
+  assert.equal(new Set(list).size, 28);
+  await send('.fliptext Venom');
+  assert.equal(replies.at(-1), 'moneV');
+  await send('.dbinary 01000001');
+  assert.equal(replies.at(-1), 'A');
+  const group = '123@g.us';
+  await send('.idgroup', { remoteJid: group });
+  assert.match(replies.at(-1), /123@g\.us/);
+  const count = replies.length;
+  await send('.fliptext Venom', { remoteJid: group });
+  await send('.idgroup', { remoteJid: group, fromMe: false });
+  assert.equal(replies.length, count);
 });

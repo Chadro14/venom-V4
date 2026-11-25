@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { additionalCommands } from './v4-menus.mjs';
 
 const runFile = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -26,24 +27,30 @@ async function menu({ message }) {
     `├ En ligne depuis ${uptime()}`,
     '╰─┬────❍',
   ];
-  for (const [section, names] of menuSections) {
+  for (const [section, name] of menuSections) {
     lines.push(`╭─┴❍「 *${section}* 」❍`);
-    for (const name of names) lines.push(`│ .${name} · ${commands.get(name).label}`);
+    lines.push(`│ .${name}`);
     lines.push('╰──────❍');
   }
+  lines.push('Toutes les commandes · .allmenu');
   const caption = lines.join('\n');
   const image = await readFile(artwork).catch(() => null);
   return image ? { image, caption } : { text: caption };
 }
 
-async function convertSticker(bytes, video) {
-  const format = video
-    ? (bytes.toString('ascii', 4, 8) === 'ftyp' ? 'mov' : null)
-    : bytes.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])) ? 'mjpeg'
-      : bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ? 'png_pipe'
-        : bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP' ? 'webp_pipe'
-          : null;
-  if (!format) throw new Error('Unsupported sticker media format');
+function mediaFormat(bytes) {
+  if (bytes.toString('ascii', 4, 8) === 'ftyp') return 'mov';
+  if (bytes.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) return 'mjpeg';
+  if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png_pipe';
+  if (bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return 'webp_pipe';
+  if (bytes.toString('ascii', 0, 4) === 'OggS') return 'ogg';
+  if (bytes.toString('ascii', 0, 3) === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)) return 'mp3';
+  return null;
+}
+
+async function convertMedia(bytes, allowedFormats, extension, options) {
+  const format = mediaFormat(bytes);
+  if (!allowedFormats.includes(format)) throw new Error('Unsupported media format');
   let binary = 'ffmpeg';
   try {
     binary = require('@ffmpeg-installer/ffmpeg').path;
@@ -52,16 +59,12 @@ async function convertSticker(bytes, video) {
   }
   const directory = await mkdtemp(join(tmpdir(), 'venom-v4-'));
   const input = join(directory, 'input');
-  const output = join(directory, 'sticker.webp');
-  const filter = 'scale=320:320:force_original_aspect_ratio=decrease,pad=320:320:(ow-iw)/2:(oh-ih)/2:color=white@0';
+  const output = join(directory, `output.${extension}`);
   try {
     await writeFile(input, bytes);
     await runFile(binary, [
       '-hide_banner', '-loglevel', 'error', '-threads', '1', '-filter_threads', '1',
-      '-protocol_whitelist', 'file,pipe', '-f', format, '-i', input,
-      '-vf', video ? `fps=12,${filter}` : filter,
-      ...(video ? ['-t', '9', '-loop', '0'] : ['-frames:v', '1']),
-      '-an', '-c:v', 'libwebp', '-quality', '60', output,
+      '-protocol_whitelist', 'file,pipe', '-f', format, '-i', input, ...options, output,
     ], { timeout: 18000 });
     return await readFile(output);
   } finally {
@@ -69,37 +72,95 @@ async function convertSticker(bytes, video) {
   }
 }
 
-async function sticker({ body, baileys }) {
-  const quoted = body.extendedTextMessage?.contextInfo?.quotedMessage;
-  const media = body.imageMessage ?? body.videoMessage ?? quoted?.imageMessage ?? quoted?.videoMessage;
-  if (!media) return { text: 'Envoie une image ou une vidéo avec .sticker, ou réponds à ce média avec la commande.' };
-  const isVideo = Boolean(body.videoMessage === media || quoted?.videoMessage === media);
-  if (isVideo && Number(media.seconds) > 9) return { text: 'Choisis une vidéo de 9 secondes maximum.' };
-  if (Number(media.fileLength) > maxMediaBytes) return { text: 'Choisis un média de 8 Mo maximum.' };
-  const stream = await baileys.downloadContentFromMessage(media, isVideo ? 'video' : 'image');
+function getMedia(body, types) {
+  const quoted = (body.extendedTextMessage ?? body.imageMessage ?? body.videoMessage)?.contextInfo?.quotedMessage;
+  for (const type of types) {
+    const media = body[`${type}Message`] ?? quoted?.[`${type}Message`];
+    if (media) return { media, type };
+  }
+  return {};
+}
+
+async function downloadMedia(baileys, media, type) {
+  if (Number(media.fileLength) > maxMediaBytes) return null;
+  const stream = await baileys.downloadContentFromMessage(media, type);
   const chunks = [];
   let size = 0;
   for await (const chunk of stream) {
     size += chunk.length;
-    if (size > maxMediaBytes) return { text: 'Choisis un média de 8 Mo maximum.' };
+    if (size > maxMediaBytes) return null;
     chunks.push(chunk);
   }
-  const buffer = await convertSticker(Buffer.concat(chunks, size), isVideo);
+  return Buffer.concat(chunks, size);
+}
+
+async function sticker({ body, baileys }) {
+  const { media, type } = getMedia(body, ['image', 'video']);
+  if (!media) return { text: 'Envoie une image ou une vidéo avec .sticker, ou réponds à ce média avec la commande.' };
+  const isVideo = type === 'video';
+  if (isVideo && Number(media.seconds) > 9) return { text: 'Choisis une vidéo de 9 secondes maximum.' };
+  const bytes = await downloadMedia(baileys, media, type);
+  if (!bytes) return { text: 'Choisis un média de 8 Mo maximum.' };
+  const filter = 'scale=320:320:force_original_aspect_ratio=decrease,pad=320:320:(ow-iw)/2:(oh-ih)/2:color=white@0';
+  const buffer = await convertMedia(bytes, isVideo ? ['mov'] : ['mjpeg', 'png_pipe', 'webp_pipe'], 'webp', [
+    '-vf', isVideo ? `fps=12,${filter}` : filter, ...(isVideo ? ['-t', '9', '-loop', '0'] : ['-frames:v', '1']),
+    '-an', '-c:v', 'libwebp', '-quality', '60',
+  ]);
   if (buffer.length > (isVideo ? 500 : 100) * 1024) return { text: 'Choisis un média plus léger pour ce sticker.' };
   return { sticker: buffer };
 }
 
+async function audio({ body, baileys }, voice) {
+  const { media, type } = getMedia(body, ['video', 'audio']);
+  if (!media) return { text: 'Réponds à une vidéo ou à un audio avec la commande.' };
+  if (Number(media.seconds) > 120) return { text: 'Choisis un média de 2 minutes maximum.' };
+  const bytes = await downloadMedia(baileys, media, type);
+  if (!bytes) return { text: 'Choisis un média de 8 Mo maximum.' };
+  const buffer = await convertMedia(bytes, ['mov', 'ogg', 'mp3'], voice ? 'ogg' : 'mp3', [
+    '-t', '120', '-vn', '-ac', '1', '-c:a', voice ? 'libopus' : 'libmp3lame', '-b:a', '48k',
+  ]);
+  return { audio: buffer, mimetype: voice ? 'audio/ogg; codecs=opus' : 'audio/mpeg', ...(voice ? { ptt: true } : {}) };
+}
+
+async function image({ body, baileys }) {
+  const { media, type } = getMedia(body, ['sticker']);
+  if (!media) return { text: 'Réponds à un sticker fixe avec .toimg.' };
+  const bytes = await downloadMedia(baileys, media, type);
+  if (!bytes) return { text: 'Choisis un média de 8 Mo maximum.' };
+  return { image: await convertMedia(bytes, ['webp_pipe'], 'png', ['-frames:v', '1']) };
+}
+
 const menuSections = [
-  ['BOT', ['menu', 'ping', 'runtime']],
-  ['STICKERS', ['sticker']],
-  ['JEUX ET TEXTE', ['dice', 'readmore']],
+  ['RECHERCHE', 'searchmenu', ['wiki', 'weather', 'itunes']],
+  ['MÉDIAS', 'downloadmenu', ['toaudio', 'toptt', 'itunes']],
+  ['OUTILS', 'toolmenu', ['fliptext', 'styletext', 'ebinary', 'dbinary', 'tts', 'readmore']],
+  ['JEUX', 'gamemenu', ['dice', 'math', 'suit']],
+  ['DIVERTISSEMENT', 'funmenu', ['truth', 'dare', '8ball', 'rate', 'quotes']],
+  ['STICKERS', 'stickermenu', ['sticker', 'toimg']],
+  ['ANIME', 'animemenu', ['anime']],
+  ['GROUPES', 'groupmenu', ['idgroup']],
+  ['RELIGION', 'religionmenu', ['bible', 'quran']],
+  ['BOT', 'othermenu', ['ping', 'runtime', 'repo']],
 ];
+
+function commandList(sections) {
+  return { text: sections.map(([label, , names]) =>
+    [`╭──❍「 *${label}* 」❍`, ...names.map(name => `│ .${name} · ${commands.get(name).label}`), '╰──────❍'].join('\n')
+  ).join('\n') };
+}
 
 const commands = new Map([
   ['menu', { label: 'Menu Venom V4', run: menu }],
+  ['allmenu', { label: 'Toutes les commandes', run: () => commandList(menuSections) }],
+  ...menuSections.map(section => [section[1], {
+    label: section[0], group: section[1] === 'groupmenu', run: () => commandList([section]),
+  }]),
   ['ping', { label: 'Réponse du bot', run: () => ({ text: '🏓 Pong · Venom V4' }) }],
   ['runtime', { label: 'Temps en ligne', run: () => ({ text: `⏱ Venom V4 est en ligne depuis ${uptime()}.` }) }],
-  ['sticker', { label: 'Image ou vidéo vers sticker', run: sticker }],
+  ['sticker', { label: 'Image ou vidéo vers sticker', media: true, run: sticker }],
+  ['toimg', { label: 'Sticker fixe vers image', media: true, run: image }],
+  ['toaudio', { label: 'Vidéo ou audio vers MP3', media: true, run: ctx => audio(ctx, false) }],
+  ['toptt', { label: 'Vidéo ou audio vers message vocal', media: true, run: ctx => audio(ctx, true) }],
   ['dice', { label: 'Lancer un dé', run: () => ({ text: dice[randomInt(dice.length)] }) }],
   ['readmore', { label: 'Masquer la suite · début | suite', run: ({ args }) => {
     const separator = args.indexOf('|');
@@ -108,16 +169,21 @@ const commands = new Map([
     }
     return { text: args.slice(0, separator).trimEnd() + readMore + args.slice(separator + 1).trimStart() };
   } }],
+  ...additionalCommands,
 ]);
 
 const aliases = new Map([
   ['help', 'menu'], ['alive', 'menu'],
   ['p', 'ping'], ['botstatus', 'ping'], ['statusbot', 'ping'],
   ['s', 'sticker'], ['stiker', 'sticker'],
+  ['style', 'styletext'], ['say', 'tts'], ['gtts', 'tts'],
+  ['mathquiz', 'math'], ['wikipedia', 'wiki'],
+  ['toimage', 'toimg'], ['tomp3', 'toaudio'],
 ]);
 
 export function bindCommands(socket, baileys, authorized) {
-  let makingSticker = false;
+  let converting = false;
+  const state = {};
   return async ({ type, messages }) => {
     if (type !== 'notify' || !authorized()) return;
     const normalize = baileys.jidNormalizedUser;
@@ -125,32 +191,33 @@ export function bindCommands(socket, baileys, authorized) {
     for (const message of messages) {
       if (!authorized()) return;
       const { fromMe, remoteJid, remoteJidAlt } = message.key ?? {};
-      if (fromMe !== true || !remoteJid ||
-          ![remoteJid, remoteJidAlt].some(jid => jid && own.has(normalize(jid)))) continue;
+      if (fromMe !== true || !remoteJid) continue;
+      const group = remoteJid.endsWith('@g.us');
+      const self = [remoteJid, remoteJidAlt].some(jid => jid && own.has(normalize(jid)));
+      if (!group && !self) continue;
       const body = message.message?.ephemeralMessage?.message ?? message.message;
       const text = body?.conversation ?? body?.extendedTextMessage?.text ??
         body?.imageMessage?.caption ?? body?.videoMessage?.caption;
-      const match = typeof text === 'string' && /^\.([a-z]+)(?:\s+([\s\S]*))?$/i.exec(text.trim());
+      const match = typeof text === 'string' && /^\.([a-z0-9]+)(?:\s+([\s\S]*))?$/i.exec(text.trim());
       if (!match) continue;
       const input = match[1].toLowerCase();
       const name = aliases.get(input) ?? input;
       const command = commands.get(name);
-      if (!command || !authorized()) continue;
+      if (!command || (group && !command.group) || !authorized()) continue;
       const args = match[2] ?? '';
       if (args.length > 1800) continue;
-      if (name === 'sticker' && makingSticker) continue;
-      if (name === 'sticker') makingSticker = true;
+      if (command.media && converting) continue;
+      if (command.media) converting = true;
       try {
         let response;
         try {
-          response = await command.run({ args, body, message, baileys });
-        } catch (error) {
-          if (name !== 'sticker') throw error;
-          response = { text: 'Conversion impossible. Essaie un autre média.' };
+          response = await command.run({ args, body, message, baileys, state, group, jid: remoteJid });
+        } catch {
+          response = { text: command.media ? 'Conversion impossible. Essaie un autre média.' : 'Service momentanément indisponible.' };
         }
         if (authorized()) await socket.sendMessage(remoteJid, response);
       } finally {
-        if (name === 'sticker') makingSticker = false;
+        if (command.media) converting = false;
       }
     }
   };
