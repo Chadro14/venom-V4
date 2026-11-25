@@ -45,6 +45,10 @@ async function animalPhoto(kind) {
   const { api, host } = providers[kind];
   const payload = await json(api);
   const source = Array.isArray(payload) ? payload[0]?.url : payload.message;
+  return publicImage(source, host);
+}
+
+async function publicImage(source, host) {
   const url = new URL(source);
   if (url.origin !== `https://${host}` || url.username || url.password) throw new Error('Image source not allowed');
   const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(8000) });
@@ -96,21 +100,66 @@ async function wiki(query) {
 }
 
 async function anime(query) {
+  const item = await animeLookup(
+    'Media(search:$name, type:ANIME, isAdult:false){title{romaji} episodes averageScore siteUrl description(asHtml:false)}',
+    query,
+  );
+  const synopsis = (item?.description ?? '').replace(/<[^>]*>/g, ' ').trim().slice(0, 1200);
+  return answer(item ? `*${item.title.romaji}*\n${item.episodes ?? '–'} épisode(s) · Note : ${item.averageScore ?? '–'}/100\n${synopsis}\n${item.siteUrl}` : 'Aucun anime trouvé.');
+}
+
+async function animeLookup(selection, name, result = 'Media') {
   const response = await fetch('https://graphql.anilist.co', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({
-      query: 'query($name: String!){Media(search:$name, type:ANIME, isAdult:false){title{romaji} episodes averageScore siteUrl description(asHtml:false)}}',
-      variables: { name: query },
+      query: `query($name: String!){${selection}}`,
+      variables: { name },
     }),
     signal: AbortSignal.timeout(8000),
   });
-  if (response.status === 404) return answer('Aucun anime trouvé.');
+  if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Anime provider HTTP ${response.status}`);
-  const item = (await response.json()).data?.Media;
-  const synopsis = (item?.description ?? '').replace(/<[^>]*>/g, ' ').trim().slice(0, 1200);
-  return answer(item ? `*${item.title.romaji}*\n${item.episodes ?? '–'} épisode(s) · Note : ${item.averageScore ?? '–'}/100\n${synopsis}\n${item.siteUrl}` : 'Aucun anime trouvé.');
+  return (await response.json()).data?.[result] ?? null;
 }
+
+const animeCharacters = {
+  naruto: ['Naruto Uzumaki', 'Naruto'],
+  boruto: ['Boruto Uzumaki', 'Boruto: Naruto Next Generations'],
+  asuna: ['Asuna Yuuki', 'Sword Art Online'],
+  deidara: ['Deidara', 'Naruto Shippuden'],
+  erza: ['Erza Scarlet', 'Fairy Tail'],
+  itachi: ['Itachi Uchiha', 'Naruto Shippuden'],
+  kakasih: ['Kakashi Hatake', 'Naruto'],
+  mikasa: ['Mikasa Ackerman', 'Shingeki no Kyojin'],
+  minato: ['Minato Namikaze', 'Naruto Shippuden'],
+  sakura: ['Sakura Haruno', 'Naruto'],
+  sasuke: ['Sasuke Uchiha', 'Naruto'],
+  madara: ['Madara Uchiha', 'Naruto Shippuden'],
+  mikey: ['Manjirou Sano', 'Tokyo Revengers'],
+  kurumi: ['Kurumi Tokisaki', 'Date A Live'],
+  nezuko: ['Nezuko Kamado', 'Kimetsu no Yaiba'],
+  keneki: ['Ken Kaneki', 'Tokyo Ghoul'],
+  kagura: ['Kagura', 'Gintama'],
+  doraemon: ['Doraemon', 'Doraemon'],
+  emilia: ['Emilia', 'Re:Zero'],
+};
+
+export const characterCommands = Object.entries(animeCharacters).map(([name, [fullName, series]]) => [
+  name, { label: fullName, async run() {
+    const item = await animeLookup(
+      'Character(search:$name){name{full} siteUrl image{large}}',
+      fullName,
+      'Character',
+    );
+    if (!item) return answer('Fiche anime introuvable.');
+    const caption = `*${fullName}*\nAnime : ${series}\n${item.siteUrl}`;
+    const image = item.image?.large
+      ? await publicImage(item.image.large, 's4.anilist.co').catch(() => null)
+      : null;
+    return image ? { ...image, caption } : answer(caption);
+  } },
+]);
 
 async function weather(query) {
   const locations = await json('https://geocoding-api.open-meteo.com/v1/search', { name: query, count: 1, language: 'fr' });
@@ -210,6 +259,10 @@ export const additionalCommands = [
     return answer(quote?.body ? `« ${quote.body} »\n— ${quote.author}` : 'Citation indisponible.');
   } }],
   ['wiki', prompt('Chercher sur Wikipédia', '.wiki Kinshasa', wiki)],
+  ['google', prompt('Ouvrir une recherche Google', '.google Kinshasa', query =>
+    answer(`https://www.google.com/search?${new URLSearchParams({ q: query })}`))],
+  ['ytsearch', prompt('Ouvrir une recherche YouTube', '.ytsearch Naruto', query =>
+    answer(`https://www.youtube.com/results?${new URLSearchParams({ search_query: query })}`))],
   ['weather', prompt('Afficher la météo', '.weather Kinshasa', weather)],
   ['anime', prompt('Trouver la fiche d’un anime', '.anime Naruto', anime)],
   ['itunes', prompt('Chercher un morceau sur Apple Music', '.itunes Naruto', itunes)],
@@ -218,6 +271,14 @@ export const additionalCommands = [
   ['quran', prompt('Lire un verset en français', '.quran 1:1', quran)],
   ['repo', { label: 'Dépôt de Venom V4', run: () => answer('https://github.com/Chadro14/venom-V4') }],
   ['tagme', { label: 'Se mentionner', run: ({ jid }) => ({ text: `@${jid.split('@')[0]}`, mentions: [jid] }) }],
+  ['react', { label: 'Réagir à un message cité', run: ({ args, body, jid }) => {
+    const text = args.trim();
+    const id = body.extendedTextMessage?.contextInfo?.stanzaId;
+    if (!id || !/^\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?$/u.test(text)) {
+      return answer('Réponds à un message avec .react suivi d’un emoji, par exemple .react 👍.');
+    }
+    return { react: { text, key: { remoteJid: jid, id, fromMe: true } } };
+  } }],
   ['q', { label: 'Relire un texte cité', run: ({ body }) => {
     const quoted = body.extendedTextMessage?.contextInfo?.quotedMessage;
     const text = quoted?.conversation ?? quoted?.extendedTextMessage?.text;

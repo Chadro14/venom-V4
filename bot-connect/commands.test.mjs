@@ -63,7 +63,7 @@ test('les sous-menus présentent des commandes exécutables', async () => {
   }
   await send('.allmenu');
   const list = [...replies.at(-1).matchAll(/│ \.(\w+)\b/g)].map(match => match[1]);
-  assert.equal(new Set(list).size, 56);
+  assert.equal(new Set(list).size, 82);
   await send('.fliptext Venom');
   assert.equal(replies.at(-1), 'moneV');
   await send('.dbinary 01000001');

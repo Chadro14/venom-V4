@@ -5,7 +5,8 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { additionalCommands } from './v4-menus.mjs';
+import { additionalCommands, characterCommands } from './v4-menus.mjs';
+import { gameCommands } from './v4-games.mjs';
 
 const runFile = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -144,19 +145,21 @@ function gain(args) {
 }
 
 async function videoOutput({ body, baileys, args }, mode) {
-  const { media, type } = getMedia(body, mode === 'volume' ? ['video'] : ['video', 'sticker']);
+  const { media, type } = getMedia(body, mode === 'gif' || mode === 'mp4' ? ['video', 'sticker'] : ['video']);
   if (!media) return { text: 'Réponds à une vidéo courte ou à un sticker avec la commande.' };
   if (Number(media.seconds) > 15) return { text: 'Choisis une vidéo de 15 secondes maximum.' };
   const volume = gain(args);
   if (mode === 'volume' && volume === null) return { text: 'Exemple : .volvideo 120 (0 à 300 %).' };
   const bytes = await downloadMedia(baileys, media, type);
   if (!bytes) return { text: 'Choisis un média de 8 Mo maximum.' };
+  const filter = 'scale=480:480:force_original_aspect_ratio=decrease:force_divisible_by=2';
   const video = await convertMedia(bytes, ['mov', 'gif', 'webp_pipe'], 'mp4', [
-    '-t', '15', '-vf', 'scale=480:480:force_original_aspect_ratio=decrease:force_divisible_by=2',
+    '-t', '15', '-vf', mode === 'smooth' ? filter + ',minterpolate=fps=30:mi_mode=blend' : filter,
     '-c:v', 'libx264', '-preset', 'veryfast', '-threads', '1', '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
-    ...(mode === 'volume' ? ['-af', `volume=${volume},alimiter=limit=0.85`, '-c:a', 'aac'] : ['-an']),
+    ...(mode === 'volume' ? ['-af', `volume=${volume},alimiter=limit=0.85`, '-c:a', 'aac']
+      : mode === 'ptv' || mode === 'smooth' ? ['-c:a', 'aac'] : ['-an']),
   ]);
-  return { video, ...(mode === 'gif' ? { gifPlayback: true } : {}) };
+  return { video, ...(mode === 'gif' ? { gifPlayback: true } : {}), ...(mode === 'ptv' ? { ptv: true } : {}) };
 }
 
 async function image({ body, baileys }) {
@@ -168,18 +171,18 @@ async function image({ body, baileys }) {
 }
 
 const menuSections = [
-  ['RECHERCHE', 'searchmenu', ['wiki', 'weather', 'itunes']],
-  ['MÉDIAS', 'downloadmenu', ['play', 'toaudio', 'toptt', 'itunes', 'togif', 'tomp4', 'volvideo']],
+  ['RECHERCHE', 'searchmenu', ['wiki', 'weather', 'itunes', 'google', 'ytsearch']],
+  ['MÉDIAS', 'downloadmenu', ['play', 'toaudio', 'toptt', 'itunes', 'togif', 'tomp4', 'volvideo', 'toptv', 'smooth']],
   ['OUTILS', 'toolmenu', ['fliptext', 'styletext', 'ebinary', 'dbinary', 'tts', 'readmore']],
   ['EFFETS AUDIO', 'audiomenu', [...Object.keys(audioEffects), 'volaudio']],
-  ['JEUX', 'gamemenu', ['dice', 'math', 'suit']],
+  ['JEUX', 'gamemenu', ['dice', 'math', 'suit', ...gameCommands.map(([name]) => name)]],
   ['DIVERTISSEMENT', 'funmenu', ['truth', 'dare', '8ball', 'rate', 'quotes', 'fact', 'pick', 'can', 'is', 'when', 'where', 'what', 'how']],
   ['PHOTOS ALÉATOIRES', 'randomphotomenu', ['catmeow', 'dogwoof']],
   ['STICKERS', 'stickermenu', ['sticker', 'toimg']],
-  ['ANIME', 'animemenu', ['anime']],
+  ['ANIME', 'animemenu', ['anime', ...characterCommands.map(([name]) => name)]],
   ['GROUPES', 'groupmenu', ['idgroup']],
   ['RELIGION', 'religionmenu', ['bible', 'quran']],
-  ['BOT', 'othermenu', ['ping', 'runtime', 'repo', 'tagme', 'q']],
+  ['BOT', 'othermenu', ['ping', 'runtime', 'repo', 'tagme', 'q', 'react']],
 ];
 
 function commandList(sections) {
@@ -212,6 +215,8 @@ const commands = new Map([
   ['volvideo', { label: 'Régler le volume vidéo', media: true, run: ctx => videoOutput(ctx, 'volume') }],
   ['togif', { label: 'Vidéo en boucle', media: true, run: ctx => videoOutput(ctx, 'gif') }],
   ['tomp4', { label: 'Convertir en MP4', media: true, run: ctx => videoOutput(ctx, 'mp4') }],
+  ['toptv', { label: 'Convertir en message vidéo', media: true, run: ctx => videoOutput(ctx, 'ptv') }],
+  ['smooth', { label: 'Fluidifier une vidéo courte', media: true, run: ctx => videoOutput(ctx, 'smooth') }],
   ['dice', { label: 'Lancer un dé', run: () => ({ text: dice[randomInt(dice.length)] }) }],
   ['readmore', { label: 'Masquer la suite · début | suite', run: ({ args }) => {
     const separator = args.indexOf('|');
@@ -221,6 +226,8 @@ const commands = new Map([
     return { text: args.slice(0, separator).trimEnd() + readMore + args.slice(separator + 1).trimStart() };
   } }],
   ...additionalCommands,
+  ...gameCommands,
+  ...characterCommands,
 ]);
 
 const aliases = new Map([
@@ -231,6 +238,7 @@ const aliases = new Map([
   ['mathquiz', 'math'], ['wikipedia', 'wiki'], ['song', 'play'],
   ['toimage', 'toimg'], ['tomp3', 'toaudio'],
   ['tovn', 'toptt'], ['toaud', 'toaudio'], ['cat', 'catmeow'], ['dog', 'dogwoof'],
+  ['yts', 'ytsearch'], ['ttc', 'tictactoe'], ['ttt', 'tictactoe'], ['bomb', 'playbomb'],
 ]);
 
 export function bindCommands(socket, baileys, authorized) {
